@@ -2,6 +2,8 @@
 Train a tokenizer using our own BPE Tokenizer library.
 In the style of GPT-4 tokenizer.
 """
+import scripts._env_bootstrap  # noqa: F401  # load .env before torch
+
 import os
 import time
 import argparse

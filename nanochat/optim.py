@@ -7,6 +7,7 @@ Addapted from: https://github.com/KellerJordan/modded-nanogpt
 Further contributions from @karpathy and @chrisjmccormick.
 """
 
+import sys
 import torch
 import torch.distributed as dist
 from torch import Tensor
@@ -17,8 +18,7 @@ Good old AdamW optimizer, fused kernel.
 https://arxiv.org/abs/1711.05101
 """
 
-@torch.compile(dynamic=False, fullgraph=True)
-def adamw_step_fused(
+def _adamw_step_fused_impl(
     p: Tensor,              # (32768, 768) - parameter tensor
     grad: Tensor,           # (32768, 768) - gradient, same shape as p
     exp_avg: Tensor,        # (32768, 768) - first moment, same shape as p
@@ -47,6 +47,12 @@ def adamw_step_fused(
     denom = (exp_avg_sq / bias2).sqrt() + eps_t
     step_size = lr_t / bias1
     p.add_(exp_avg / denom, alpha=-step_size)
+
+
+if sys.platform != "win32":
+    adamw_step_fused = torch.compile(_adamw_step_fused_impl, dynamic=False, fullgraph=True)
+else:
+    adamw_step_fused = _adamw_step_fused_impl
 
 # -----------------------------------------------------------------------------
 """
@@ -87,8 +93,7 @@ polar_express_coeffs = [
     (2.3465413258596377, -1.7097828382687081, 0.42323551169305323),
 ]
 
-@torch.compile(dynamic=False, fullgraph=True)
-def muon_step_fused(
+def _muon_step_fused_impl(
     stacked_grads: Tensor,          # (12, 768, 3072) - stacked gradients
     stacked_params: Tensor,         # (12, 768, 3072) - stacked parameters
     momentum_buffer: Tensor,        # (12, 768, 3072) - first moment buffer
@@ -144,6 +149,12 @@ def muon_step_fused(
     wd = wd_t.to(g.dtype)
     mask = (g * stacked_params) >= 0
     stacked_params.sub_(lr * g + lr * wd * stacked_params * mask)
+
+
+if sys.platform != "win32":
+    muon_step_fused = torch.compile(_muon_step_fused_impl, dynamic=False, fullgraph=True)
+else:
+    muon_step_fused = _muon_step_fused_impl
 
 # -----------------------------------------------------------------------------
 # Single GPU version of the MuonAdamW optimizer.

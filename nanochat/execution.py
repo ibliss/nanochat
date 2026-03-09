@@ -26,8 +26,10 @@ import faulthandler
 import io
 import multiprocessing
 import os
+import pickle
 import platform
 import signal
+import sys
 import tempfile
 from dataclasses import dataclass
 from typing import Optional
@@ -63,6 +65,11 @@ class ExecutionResult:
 
 @contextlib.contextmanager
 def time_limit(seconds: float):
+    # signal.SIGALRM and setitimer are Unix-only. On Windows we rely on the process-level
+    # timeout in execute_code() (join + kill). So no-op here on Windows.
+    if sys.platform == "win32":
+        yield
+        return
     def signal_handler(signum, frame):
         raise TimeoutException("Timed out!")
 
@@ -144,12 +151,15 @@ def reliability_guard(maximum_memory_bytes: Optional[int] = None):
     with caution.
     """
 
-    if platform.uname().system != "Darwin":
-        # These resource limit calls seem to fail on macOS (Darwin), skip?
-        import resource
-        resource.setrlimit(resource.RLIMIT_AS, (maximum_memory_bytes, maximum_memory_bytes))
-        resource.setrlimit(resource.RLIMIT_DATA, (maximum_memory_bytes, maximum_memory_bytes))
-        resource.setrlimit(resource.RLIMIT_STACK, (maximum_memory_bytes, maximum_memory_bytes))
+    if platform.uname().system != "Darwin" and sys.platform != "win32":
+        # resource module is Unix-only (not available on Windows). Skip on macOS (Darwin) where setrlimit often fails.
+        try:
+            import resource
+            resource.setrlimit(resource.RLIMIT_AS, (maximum_memory_bytes, maximum_memory_bytes))
+            resource.setrlimit(resource.RLIMIT_DATA, (maximum_memory_bytes, maximum_memory_bytes))
+            resource.setrlimit(resource.RLIMIT_STACK, (maximum_memory_bytes, maximum_memory_bytes))
+        except (ImportError, OSError, ValueError):
+            pass
 
     faulthandler.disable()
 
@@ -283,6 +293,26 @@ def _unsafe_execute(code: str, timeout: float, maximum_memory_bytes: Optional[in
         os.unlink = unlink
 
 
+def _unsafe_execute_to_file(
+    code: str,
+    timeout: float,
+    maximum_memory_bytes: Optional[int],
+    result_file_path: str,
+) -> None:
+    """Same as _unsafe_execute but writes result dict to a pickle file. Used on Windows to avoid multiprocessing.Manager() (which triggers spawn and re-import of __main__)."""
+    result_dict = {
+        "success": False,
+        "stdout": "",
+        "stderr": "",
+        "timeout": False,
+        "memory_exceeded": False,
+        "error": None,
+    }
+    _unsafe_execute(code, timeout, maximum_memory_bytes, result_dict)
+    with open(result_file_path, "wb") as f:
+        pickle.dump(result_dict, f)
+
+
 def execute_code(
     code: str,
     timeout: float = 5.0, # 5 seconds default
@@ -306,44 +336,98 @@ def execute_code(
         >>> result.stdout
         'hello world\\n'
     """
+    # On Windows, multiprocessing uses "spawn". Manager() starts a server process that
+    # re-imports __main__, which fails when the main script was run with python -m
+    # (e.g. python -m scripts.chat_sft). Use a temp file to pass results instead.
+    use_file_protocol = sys.platform == "win32"
 
-    manager = multiprocessing.Manager()
-    result_dict = manager.dict()
+    if use_file_protocol:
+        fd, result_file_path = tempfile.mkstemp(suffix=".pickle")
+        os.close(fd)
+        try:
+            p = multiprocessing.Process(
+                target=_unsafe_execute_to_file,
+                args=(code, timeout, maximum_memory_bytes, result_file_path),
+            )
+            p.start()
+            p.join(timeout=timeout + 1)
 
-    p = multiprocessing.Process(
-        target=_unsafe_execute,
-        args=(code, timeout, maximum_memory_bytes, result_dict)
-    )
-    p.start()
-    p.join(timeout=timeout + 1)
+            if p.is_alive():
+                p.kill()
+                p.join(timeout=2)
+                return ExecutionResult(
+                    success=False,
+                    stdout="",
+                    stderr="",
+                    error="Execution timed out (process killed)",
+                    timeout=True,
+                    memory_exceeded=False,
+                )
 
-    if p.is_alive():
-        p.kill()
-        return ExecutionResult(
-            success=False,
-            stdout="",
-            stderr="",
-            error="Execution timed out (process killed)",
-            timeout=True,
-            memory_exceeded=False,
+            if not os.path.exists(result_file_path):
+                return ExecutionResult(
+                    success=False,
+                    stdout="",
+                    stderr="",
+                    error="Execution failed (no result returned)",
+                    timeout=True,
+                    memory_exceeded=False,
+                )
+
+            with open(result_file_path, "rb") as f:
+                result_dict = pickle.load(f)
+            return ExecutionResult(
+                success=result_dict["success"],
+                stdout=result_dict["stdout"],
+                stderr=result_dict["stderr"],
+                error=result_dict["error"],
+                timeout=result_dict["timeout"],
+                memory_exceeded=result_dict["memory_exceeded"],
+            )
+        finally:
+            if os.path.exists(result_file_path):
+                try:
+                    os.unlink(result_file_path)
+                except OSError:
+                    pass
+    else:
+        manager = multiprocessing.Manager()
+        result_dict = manager.dict()
+
+        p = multiprocessing.Process(
+            target=_unsafe_execute,
+            args=(code, timeout, maximum_memory_bytes, result_dict),
         )
+        p.start()
+        p.join(timeout=timeout + 1)
 
-    if not result_dict:
+        if p.is_alive():
+            p.kill()
+            return ExecutionResult(
+                success=False,
+                stdout="",
+                stderr="",
+                error="Execution timed out (process killed)",
+                timeout=True,
+                memory_exceeded=False,
+            )
+
+        if not result_dict:
+            return ExecutionResult(
+                success=False,
+                stdout="",
+                stderr="",
+                error="Execution failed (no result returned)",
+                timeout=True,
+                memory_exceeded=False,
+            )
+
         return ExecutionResult(
-            success=False,
-            stdout="",
-            stderr="",
-            error="Execution failed (no result returned)",
-            timeout=True,
-            memory_exceeded=False,
+            success=result_dict["success"],
+            stdout=result_dict["stdout"],
+            stderr=result_dict["stderr"],
+            error=result_dict["error"],
+            timeout=result_dict["timeout"],
+            memory_exceeded=result_dict["memory_exceeded"],
         )
-
-    return ExecutionResult(
-        success=result_dict["success"],
-        stdout=result_dict["stdout"],
-        stderr=result_dict["stderr"],
-        error=result_dict["error"],
-        timeout=result_dict["timeout"],
-        memory_exceeded=result_dict["memory_exceeded"],
-    )
 

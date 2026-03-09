@@ -7,6 +7,7 @@ Example runs:
 python -m scripts.chat_eval -a ARC-Easy
 torchrun --nproc_per_node=8 -m scripts.chat_eval -- -a ARC-Easy
 """
+import scripts._env_bootstrap  # noqa: F401  # load .env before torch
 
 import argparse
 from functools import partial

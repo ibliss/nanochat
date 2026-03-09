@@ -10,8 +10,10 @@ torchrun --nproc_per_node=8 -m scripts.base_train
 If you are only on CPU/Macbook, you'll want to train a much much smaller LLM. Example:
 python -m scripts.base_train --depth=4 --max-seq-len=512 --device-batch-size=1 --eval-tokens=512 --core-metric-every=-1 --total-batch-size=512 --num-iterations=20
 """
+import scripts._env_bootstrap  # noqa: F401  # load .env before torch
 
 import os
+import sys
 os.environ["PYTORCH_ALLOC_CONF"] = "expandable_segments:True"
 import gc
 import json
@@ -241,10 +243,13 @@ def disable_fp8(model):
             setattr(parent, attr_name, fp8_module)
 
 # -----------------------------------------------------------------------------
-# Compile the model
+# Compile the model (skip on Windows: Triton is not available there)
 
-orig_model = model # original, uncompiled model, for saving raw model state_dict and for inference/evaluation (because the shapes may change shape)
-model = torch.compile(model, dynamic=False) # the inputs to model will never change shape so dynamic=False is safe
+orig_model = model  # original, uncompiled model, for saving and for inference/eval (shapes may change)
+if sys.platform != "win32":
+    model = torch.compile(model, dynamic=False)  # Triton-backed; inputs never change shape so dynamic=False is safe
+else:
+    print0("Skipping torch.compile on Windows (Triton not available); training will run in eager mode.")
 
 # -----------------------------------------------------------------------------
 # Scaling laws and muP extrapolations to determine the optimal training horizon, batch size, learning rates, weight decay.

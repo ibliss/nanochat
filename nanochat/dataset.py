@@ -6,6 +6,7 @@ This file contains utilities for:
 
 For details of how the dataset was prepared, see `repackage_data_reference.py`.
 """
+import scripts._env_bootstrap  # noqa: F401  # load .env before torch
 
 import os
 import argparse

@@ -15,6 +15,7 @@ python -m scripts.chat_rl
 8 GPUs:
 torchrun --standalone --nproc_per_node=8 -m scripts.chat_rl -- --run=default
 """
+import scripts._env_bootstrap  # noqa: F401  # load .env before torch
 
 import argparse
 import os

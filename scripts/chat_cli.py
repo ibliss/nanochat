@@ -4,6 +4,8 @@ New and upgraded chat mode because a lot of the code has changed since the last 
 Intended to be run single GPU only atm:
 python -m scripts.chat_cli
 """
+import scripts._env_bootstrap  # noqa: F401  # load .env before torch
+
 import argparse
 import torch
 from nanochat.common import compute_init, autodetect_device_type

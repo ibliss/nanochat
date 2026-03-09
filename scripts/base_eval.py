@@ -18,7 +18,12 @@ Examples:
 
     # Quick/approximate evaluation using a single GPU
     python -m scripts.base_eval --model-tag d24 --device-batch-size=16 --max-per-task=100 --split-tokens=524288
+
+    # Include model tag in CSV name (base_model_d6_001000.csv) so compare_base_eval shows each depth with correct param count
+    python -m scripts.base_eval --model-tag d6 --tagged-csv
 """
+import scripts._env_bootstrap  # noqa: F401  # load .env before torch
+
 import os
 import csv
 import time
@@ -180,6 +185,7 @@ def main():
     parser.add_argument('--eval', type=str, default='core,bpb,sample', help='Comma-separated evaluations to run: core,bpb,sample (default: all)')
     parser.add_argument('--hf-path', type=str, default=None, help='HuggingFace model path (e.g. openai-community/gpt2-xl)')
     parser.add_argument('--model-tag', type=str, default=None, help='nanochat model tag to identify the checkpoint directory')
+    parser.add_argument('--tagged-csv', action='store_true', help='Include model tag in output CSV name (e.g. base_model_d6_001000.csv) for compare_base_eval')
     parser.add_argument('--step', type=int, default=None, help='Model step to load (default = last)')
     parser.add_argument('--max-per-task', type=int, default=-1, help='Max examples per CORE task (-1 = all)')
     parser.add_argument('--device-batch-size', type=int, default=32, help='Per-device batch size for BPB evaluation')
@@ -209,8 +215,12 @@ def main():
         model, tokenizer, meta = load_model("base", device, phase="eval", model_tag=args.model_tag, step=args.step)
         sequence_len = meta["model_config"]["sequence_len"]
         token_bytes = get_token_bytes(device=device)
-        model_name = f"base_model (step {meta['step']})"
-        model_slug = f"base_model_{meta['step']:06d}"
+        tag = meta.get("model_tag", "base")
+        model_name = f"base_model {tag} (step {meta['step']})"
+        if args.tagged_csv:
+            model_slug = f"base_model_{tag}_{meta['step']:06d}"
+        else:
+            model_slug = f"base_model_{meta['step']:06d}"
 
     print0(f"Evaluating model: {model_name}")
     print0(f"Eval modes: {', '.join(sorted(eval_modes))}")

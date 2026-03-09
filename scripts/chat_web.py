@@ -29,6 +29,7 @@ Abuse Prevention:
   - Top-k clamped to 0-200 (0 disables top-k filtering, using full vocabulary)
   - Max tokens clamped to 1-4096
 """
+import scripts._env_bootstrap  # noqa: F401  # load .env before torch
 
 import argparse
 import json

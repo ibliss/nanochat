@@ -8,6 +8,7 @@ Or torchrun for training:
 
 torchrun --standalone --nproc_per_node=8 -m scripts.chat_sft -- --device-batch-size=16
 """
+import scripts._env_bootstrap  # noqa: F401  # load .env before torch
 
 import gc
 import argparse
@@ -117,7 +118,15 @@ for name, fallback, source in [
         print0(f"Using {name}={arg_val}")
 
 orig_model = model
-model = torch.compile(model, dynamic=False)
+try:
+    import triton  # noqa: F401
+    _has_triton = True
+except Exception:
+    _has_triton = False
+if _has_triton:
+    model = torch.compile(model, dynamic=False)
+else:
+    print0("Triton not available (e.g. on Windows); training without torch.compile (slower but works).")
 depth = model.config.n_layer
 num_flops_per_token = model.estimate_flops()
 tokens_per_fwdbwd = args.device_batch_size * args.max_seq_len # tokens per iteration for a single rank
@@ -344,11 +353,12 @@ while True:
         last_step = bool(last_step_tensor.item())
 
     # once in a while: evaluate the val bpb (all ranks participate)
+    # use orig_model so we can pass loss_reduction='none' without triggering Triton (e.g. on Windows)
     if last_step or (args.eval_every > 0 and step % args.eval_every == 0):
         model.eval()
         val_loader = build_val_loader()
         eval_steps = args.eval_tokens // (args.device_batch_size * args.max_seq_len * ddp_world_size)
-        val_bpb = evaluate_bpb(model, val_loader, eval_steps, token_bytes)
+        val_bpb = evaluate_bpb(orig_model, val_loader, eval_steps, token_bytes)
         print0(f"Step {step:05d} | Validation bpb: {val_bpb:.4f}")
         if val_bpb < min_val_bpb:
             min_val_bpb = val_bpb
